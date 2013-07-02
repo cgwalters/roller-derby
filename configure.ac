@@ -31,6 +31,7 @@ LT_INIT([disable-static])
 PKG_PROG_PKG_CONFIG
 
 PKG_CHECK_MODULES(BUILDDEP_GIO_UNIX, [gio-unix-2.0 >= 2.34.0])
+PKG_CHECK_MODULES(BUILDDEP_LVM2APP, [lvm2app >= 2.2])
 
 AC_ARG_ENABLE(documentation,
               AC_HELP_STRING([--enable-documentation],

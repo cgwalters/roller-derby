@@ -22,7 +22,7 @@ bin_PROGRAMS += roller-derby
 roller_derby_SOURCES = src/main.c \
 	$(NULL)
 
-roller_derby_CFLAGS = $(AM_CFLAGS) $(BUILDDEP_GIO_UNIX_CFLAGS)
-roller_derby_LDADD = $(BUILDDEP_GIO_UNIX_LIBS)
+roller_derby_CFLAGS = $(AM_CFLAGS) $(BUILDDEP_GIO_UNIX_CFLAGS) $(BUILDDEP_LVM2APP_CFLAGS)
+roller_derby_LDADD = $(BUILDDEP_GIO_UNIX_LIBS) $(BUILDDEP_LVM2APP_LIBS)
 
 MANPAGES += doc/roller-derby.1
