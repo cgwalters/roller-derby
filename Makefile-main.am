@@ -17,12 +17,22 @@
 # Free Software Foundation, Inc., 59 Temple Place - Suite 330,
 # Boston, MA 02111-1307, USA.
 
+libgsystem_srcpath := src/libgsystem
+libgsystem_cflags = $(BUILDDEP_GIO_UNIX_CFLAGS) -I$(srcdir)/src/libgsystem
+libgsystem_libs = $(BUILDDEP_GIO_UNIX_LIBS)
+include src/libgsystem/Makefile-libgsystem.am
+noinst_LTLIBRARIES += libgsystem.la
+
 bin_PROGRAMS += roller-derby
 
-roller_derby_SOURCES = src/main.c \
+roller_derby_SOURCES = \
+	src/main.c \
+	src/glvm.c \
+	src/glvm.h \
+	src/util.h \
 	$(NULL)
 
-roller_derby_CFLAGS = $(AM_CFLAGS) $(BUILDDEP_GIO_UNIX_CFLAGS) $(BUILDDEP_LVM2APP_CFLAGS)
-roller_derby_LDADD = $(BUILDDEP_GIO_UNIX_LIBS) $(BUILDDEP_LVM2APP_LIBS)
+roller_derby_CFLAGS = $(AM_CFLAGS) $(BUILDDEP_GIO_UNIX_CFLAGS) -I$(srcdir)/src -I$(srcdir)/src/libgsystem $(BUILDDEP_LVM2APP_CFLAGS)
+roller_derby_LDADD = $(BUILDDEP_GIO_UNIX_LIBS) $(BUILDDEP_LVM2APP_LIBS) libgsystem.la
 
 MANPAGES += doc/roller-derby.1
