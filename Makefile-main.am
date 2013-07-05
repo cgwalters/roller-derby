@@ -26,10 +26,16 @@ noinst_LTLIBRARIES += libgsystem.la
 bin_PROGRAMS += roller-derby
 
 roller_derby_SOURCES = \
-	src/main.c \
 	src/glvm.c \
 	src/glvm.h \
 	src/util.h \
+	src/rd.h \
+	src/rd-addremove.c \
+	src/rd-builtins.h \
+	src/rd-builtin-add.c \
+	src/rd-builtin-remove.c \
+	src/rd-builtin-list.c \
+	src/main.c \
 	$(NULL)
 
 roller_derby_CFLAGS = $(AM_CFLAGS) $(BUILDDEP_GIO_UNIX_CFLAGS) -I$(srcdir)/src -I$(srcdir)/src/libgsystem $(BUILDDEP_LVM2APP_CFLAGS)

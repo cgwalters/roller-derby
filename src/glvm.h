@@ -20,6 +20,11 @@
 
 #pragma once
 
+#include <gio/gio.h>
+#include <lvm2app.h>
+
+G_BEGIN_DECLS
+
 void glvm_cleanup_vg_impl (void *loc);
 #define glvm_cleanup_vg __attribute__ ((cleanup(glvm_cleanup_vg_impl)))
 
@@ -60,3 +65,5 @@ gboolean glvm_get_lv_majmin (lv_t        lv,
 			    gint       *out_major,
 			    gint       *out_minor,
 			    GError    **error);
+
+G_END_DECLS

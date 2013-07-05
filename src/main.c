@@ -21,37 +21,44 @@
 #include "config.h"
 
 #include <gio/gio.h>
-#include <libdevmapper.h>
-#include <lvm2app.h>
-#include <lvm2cmd.h>
 #include <string.h>
 
 #include "util.h"
+#include "rd-main.h"
 #include "glvm.h"
 #include "libgsystem.h"
 
-typedef struct {
+static gboolean handle_opt_version (const gchar    *option_name,
+				    const gchar    *value,
+				    gpointer        data,
+				    GError        **error);
+
+static GOptionEntry app_options[] = {
+  { "version", 0, 0, G_OPTION_ARG_CALLBACK, handle_opt_version, "Show version", NULL },
+  { NULL }
+};
+
+struct _RdApp {
   GCancellable *cancellable;
 
   lvm_t lvmh;
   GHashTable  *mountdata;
-} RollerDerbyApp;
-
-static RollerDerbyApp *app;
-
-static gboolean opt_verbose; 
-static char **opt_tag_vg;
-static char **opt_untag_vg;
-static char **opt_tag_lv;
-static char **opt_untag_lv;
-
-static GOptionEntry options[] = {
-  { "verbose", 'v', 0, G_OPTION_ARG_NONE, &opt_verbose, "Print more information", NULL },
-  { "tag-vg", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_tag_vg, "Enable snapshotting for all LVs in volume group VG", "VG" },
-  { "untag-vg", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_untag_vg, "Disable snapshotting for all LVs in volume group VG", "VG" },
-  { "tag", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_tag_lv, "Enable snapshotting for given logical volume LV", "LV" },
-  { "untag", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_untag_lv, "Disable snapshotting for given logical volume LV", "LV" },
+  GOptionGroup *optgroup;
 };
+
+static RdBuiltin builtins[] = {
+  { "list", rd_builtin_list, 0 },
+  { "add", rd_builtin_add, 0 },
+  { "remove", rd_builtin_remove, 0 },
+#if 0
+  { "add-vg", rd_builtin_add_vg, 0 },
+  { "remove-vg", rd_builtin_remove_vg, 0 },
+  { "snapshot", rd_builtin_snapshot, 0 },
+#endif
+  { NULL }
+};
+
+static RdApp *app;
 
 static char **
 parse_file_lines (GFile           *path,
@@ -94,188 +101,67 @@ parse_mounts_indexed_by_majmin (GError           **error)
   return ret;
 }
 
+lvm_t
+rd_app_get_lvmh (RdApp *app)
+{
+  return app->lvmh;
+}
+
+GOptionGroup *
+rd_app_get_options (RdApp *app)
+{
+  if (!app->optgroup)
+    {
+      app->optgroup = g_option_group_new ("roller-derby",
+                                          "Options for roller-derby",
+                                          "Show all roller-derby options", NULL, NULL);
+      g_option_group_add_entries (app->optgroup, app_options);
+    }
+  return app->optgroup;
+}
+
+GHashTable *
+rd_app_get_mounts (RdApp   *self)
+{
+  if (!self->mountdata)
+    {
+      GError *local_error = NULL;
+      self->mountdata = parse_mounts_indexed_by_majmin (&local_error);
+      if (local_error)
+        {
+          g_printerr ("Internal Error: %s\n", local_error->message);
+          exit (1);
+        }
+    }
+
+  return self->mountdata;
+}
+
 static void
-lookup_mount (GHashTable   *mountcache,
-              gint          major,
-              gint          minor,
-              char        **path,
-              char        **filesystem)
-{
-  gs_free char *key = g_strdup_printf ("%d:%d", major, minor);
-  char **lines = g_hash_table_lookup (mountcache, key);
+usage (void) G_GNUC_NORETURN;
 
-  if (!lines)
-    *path = *filesystem = NULL;
-  else
+static void
+usage (void)
+{
+  RdBuiltin *biter = builtins;
+  g_print ("Usage: roller-derby BUILTIN\n");
+  g_print ("builtins:\n");
+  while (biter->name)
     {
-      *path = lines[4];
-      *filesystem = lines[8];
+      g_print ("  %s\n", biter->name);
+      biter++;
     }
+  exit (1);
 }
 
 static gboolean
-tag_list_includes_rollback (struct dm_list    *tags)
+handle_opt_version (const gchar    *option_name,
+                    const gchar    *value,
+                    gpointer        data,
+                    GError        **error)
 {
-  struct lvm_str_list *tagl;
-
-  dm_list_iterate_items (tagl, tags)
-    {
-      const char *tag = tagl->str;
-      if (strcmp (tag, "rollback_include") == 0)
-        {
-          return TRUE;
-        }
-    }
-  return FALSE;
-}
-
-static gboolean
-list_lvs_to_snapshot (lvm_t              lvmh,
-                      GPtrArray        **out_lv_names,
-                      GCancellable      *cancellable,
-                      GError           **error)
-{
-  gboolean ret = FALSE;
-  gs_unref_ptrarray GPtrArray *ret_lv_names = NULL;
-  struct dm_list *vgnames = NULL;
-  struct lvm_str_list *strl;
-
-  ret_lv_names = g_ptr_array_new_with_free_func (g_free);
-  
-  vgnames = lvm_list_vg_names (lvmh);
-  dm_list_iterate_items (strl, vgnames)
-    {
-      struct dm_list *tags;
-      struct dm_list *lvs;
-      struct lvm_lv_list *lvsl;
-      gboolean include_entire_vg = FALSE;
-      const char *vgname = strl->str;
-      vg_t vg = lvm_vg_open (lvmh, vgname, "r", 0);
-
-      if (vg == NULL)
-        {
-          glvm_set_error (error, lvmh);
-          goto out;
-        }
-
-      tags = lvm_vg_get_tags (vg);
-      include_entire_vg = tag_list_includes_rollback (tags);
-
-      lvs = lvm_vg_list_lvs (vg);
-      dm_list_iterate_items (lvsl, lvs)
-        {
-          lv_t lv = lvsl->lv;
-          gboolean matches;
-          const char *lvname = lvm_lv_get_name (lv);
-          
-          if (include_entire_vg)
-            {
-              matches = TRUE;
-            }
-          else
-            {
-              tags = lvm_lv_get_tags (lv);
-              matches = tag_list_includes_rollback (tags);
-            }
-
-          if (matches)
-            g_ptr_array_add (ret_lv_names, g_strdup_printf ("%s/%s", vgname, lvname));
-        }
-      
-      if (lvm_vg_close (vg) == -1)
-        {
-          glvm_set_error (error, lvmh);
-          goto out;
-        }
-    }
-
-  ret = TRUE;
- out:
-  rd_transfer_out_value (out_lv_names, &ret_lv_names);
-  return ret;
-}
-
-static gboolean
-tag_one_lv (lvm_t              lvmh,
-            const char        *path,
-            gboolean           do_tag,
-            GCancellable      *cancellable,
-            GError           **error)
-{
-  gboolean ret = FALSE;
-  gs_free char *vgname = NULL;
-  gs_free char *lvname = NULL;
-  glvm_cleanup_vg vg_t vg = NULL;
-  lv_t lv;
-
-  if (!glvm_open_vg_lv (lvmh, path, "w", 0, &vg, &lv,
-                        cancellable, error))
-    goto out;
-
-  if (do_tag)
-    {
-      if (lvm_lv_add_tag (lv, "rollback_include") == -1)
-        {
-          glvm_set_error (error, lvmh);
-          goto out;
-        }
-    }
-  else
-    {
-      if (lvm_lv_remove_tag (lv, "rollback_include") == -1)
-        {
-          glvm_set_error (error, lvmh);
-          goto out;
-        }
-    }
-
-  if (lvm_vg_write (vg) == -1)
-    {
-      glvm_set_error (error, lvmh);
-      goto out;
-    }
-
-  ret = TRUE;
- out:
-  return ret;
-}
-
-static gboolean
-print_one_lv_status (lvm_t           lvmh,
-                     GHashTable     *mountdata,
-                     const char     *path,
-                     GCancellable   *cancellable,
-                     GError        **error)
-{
-  gboolean ret = FALSE;
-  lv_t lv = NULL;
-  int major, minor;
-  char *mount_path;
-  char *mount_fs;
-  glvm_cleanup_vg vg_t vg = NULL;
-          
-  if (!glvm_open_vg_lv (app->lvmh, path, "r", 0, &vg, &lv,
-                        cancellable, error))
-    goto out;
-
-  if (!glvm_get_lv_majmin (lv, &major, &minor, error))
-    goto out;
-
-  g_print ("%s\n", path);
-
-  lookup_mount (mountdata, major, minor, &mount_path, &mount_fs);
-  if (mount_path == NULL)
-    g_print ("  (not mounted)\n");
-  else
-    {
-      g_print ("  mounted: %s\n", mount_path);
-      g_print ("  fs: %s\n", mount_fs);
-    }
-
-
-  ret = TRUE;
- out:
-  return ret;
+  g_print ("roller-derby %s\n", PACKAGE_VERSION);
+  exit (0);
 }
 
 int
@@ -285,22 +171,35 @@ main (int    argc,
   GCancellable *cancellable = NULL;
   GError *local_error = NULL;
   GError **error = &local_error;
-  RollerDerbyApp appstruct;
-  guint i;
+  RdApp appstruct;
   gs_unref_ptrarray GPtrArray *names = NULL;
   GOptionContext *context;
-  char **iter;
+  RdBuiltin *biter = builtins;
+  const char *builtin_name;
 
+  /* http://bugzilla.gnome.org/show_bug.cgi?id=526454 */
   g_setenv ("GIO_USE_VFS", "local", TRUE);
+
+  g_type_init ();
 
   memset (&appstruct, 0, sizeof (appstruct));
   app = &appstruct;
 
   context = g_option_context_new ("Manage LVM rollback state");
-  g_option_context_add_main_entries (context, options, NULL);
+  g_option_context_add_group (context, rd_app_get_options (app));
 
   if (!g_option_context_parse (context, &argc, &argv, error))
     goto out;
+
+  if (argc < 2)
+    usage ();
+
+  builtin_name = argv[1];
+  while (biter->name && strcmp (builtin_name, biter->name) != 0)
+    biter++;
+
+  if (!biter->name)
+    usage ();
 
   app->lvmh = lvm_init (NULL);
   if (!app->lvmh)
@@ -309,51 +208,9 @@ main (int    argc,
       goto out;
     }
 
-  app->mountdata = parse_mounts_indexed_by_majmin (error);
-  if (!app->mountdata)
+  if (!biter->func (argc - 2, argv + 2, app, cancellable, error))
     goto out;
-
-  if (opt_tag_lv)
-    {
-      for (iter = opt_tag_lv; *iter; iter++)
-        {
-          const char *lvname = *iter;
-          if (!tag_one_lv (app->lvmh, lvname, TRUE,
-                           cancellable, error))
-            goto out;
-        }
-    }
-
-  if (opt_untag_lv)
-    {
-      for (iter = opt_untag_lv; *iter; iter++)
-        {
-          const char *lvname = *iter;
-          if (!tag_one_lv (app->lvmh, lvname, FALSE,
-                           cancellable, error))
-            goto out;
-        }
-    }
-
-  if (!list_lvs_to_snapshot (app->lvmh, &names, cancellable, error))
-    goto out;
-
-  if (names->len > 0)
-    {
-      for (i = 0; i < names->len; i++)
-        {
-          const char *path = names->pdata[i];
-          
-          if (!print_one_lv_status (app->lvmh, app->mountdata, path,
-                                    cancellable, error))
-            goto out;
-        }
-    }
-  else
-    {
-      g_print ("No LVs tagged with 'rollback_include'; use --tag or --tag-vg to add them\n");
-    }
-
+  
  out:
   if (app->lvmh)
     lvm_quit (app->lvmh);
