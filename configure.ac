@@ -18,7 +18,7 @@ if test "x$GCC" = "xyes"; then
 		-Werror=implicit-function-declaration \
 		-Werror=pointer-arith -Werror=init-self -Werror=format=2 \
 		-Werror=format-security \
-		-Werror=missing-include-dirs -Werror=aggregate-return \
+		-Werror=missing-include-dirs \
 		-Werror=declaration-after-statement"
 fi
 changequote([,])dnl

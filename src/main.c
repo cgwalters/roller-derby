@@ -34,6 +34,7 @@ typedef struct {
   GCancellable *cancellable;
 
   lvm_t lvmh;
+  GHashTable  *mountdata;
 } RollerDerbyApp;
 
 static RollerDerbyApp *app;
@@ -52,28 +53,64 @@ static GOptionEntry options[] = {
   { "untag", 0, 0, G_OPTION_ARG_STRING_ARRAY, &opt_untag_lv, "Disable snapshotting for given logical volume LV", "LV" },
 };
 
-static gboolean
-split_lvpath (const char *qualified_name,
-              char      **out_vgname,
-              char      **out_lvname,
-              GError    **error)
+static char **
+parse_file_lines (GFile           *path,
+                  GError         **error)
 {
-  gboolean ret = FALSE;
-  const char *slash = strchr (qualified_name, '/');
+  gs_free char *contents;
+  
+  contents = gs_file_load_contents_utf8 (path, NULL, error);
+  if (!contents)
+    return NULL;
 
-  if (!slash)
+  return g_strsplit (contents, "\n", -1);
+}
+
+static GHashTable *
+parse_mounts_indexed_by_majmin (GError           **error)
+{
+  gs_unref_object GFile *mountinfo = g_file_new_for_path ("/proc/self/mountinfo");
+  GHashTable *ret;
+  char **lines;
+  char **iter;
+
+  lines = parse_file_lines (mountinfo, error);
+  if (!lines)
+    return NULL;
+
+  ret = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, (GDestroyNotify)g_strfreev);
+
+  for (iter = lines; *iter; iter++)
     {
-      g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVAL,
-                   "Invalid argument '%s' - expected VGNAME/LVNAME",
-                   qualified_name);
-      goto out;
+      char **components = g_strsplit (*iter, " ", -1);
+      if (g_strv_length (components) < 8)
+        {
+          g_strfreev (components);
+          continue;
+        }
+      g_hash_table_insert (ret, g_strdup (components[2]), components);
     }
 
-  ret = TRUE;
-  *out_vgname = g_strndup (qualified_name, slash - qualified_name);
-  *out_lvname = g_strdup (slash+1);
- out:
   return ret;
+}
+
+static void
+lookup_mount (GHashTable   *mountcache,
+              gint          major,
+              gint          minor,
+              char        **path,
+              char        **filesystem)
+{
+  gs_free char *key = g_strdup_printf ("%d:%d", major, minor);
+  char **lines = g_hash_table_lookup (mountcache, key);
+
+  if (!lines)
+    *path = *filesystem = NULL;
+  else
+    {
+      *path = lines[4];
+      *filesystem = lines[8];
+    }
 }
 
 static gboolean
@@ -168,27 +205,13 @@ tag_one_lv (lvm_t              lvmh,
   gboolean ret = FALSE;
   gs_free char *vgname = NULL;
   gs_free char *lvname = NULL;
-  vg_t vg = NULL;
+  glvm_cleanup_vg vg_t vg = NULL;
   lv_t lv;
 
-  if (!split_lvpath (path, &vgname, &lvname, error))
+  if (!glvm_open_vg_lv (lvmh, path, "w", 0, &vg, &lv,
+                        cancellable, error))
     goto out;
 
-  vg = lvm_vg_open (lvmh, vgname, "w", 0);
-  if (vg == NULL)
-    {
-      glvm_set_error (error, lvmh);
-      goto out;
-    }
-
-  lv = lvm_lv_from_name (vg, lvname);
-  if (lv == NULL)
-    {
-      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-                   "No such LV '%s'", path);
-      goto out;
-    }
-  
   if (do_tag)
     {
       if (lvm_lv_add_tag (lv, "rollback_include") == -1)
@@ -214,9 +237,44 @@ tag_one_lv (lvm_t              lvmh,
 
   ret = TRUE;
  out:
-  if (vg)
-    lvm_vg_close (vg);
+  return ret;
+}
 
+static gboolean
+print_one_lv_status (lvm_t           lvmh,
+                     GHashTable     *mountdata,
+                     const char     *path,
+                     GCancellable   *cancellable,
+                     GError        **error)
+{
+  gboolean ret = FALSE;
+  lv_t lv = NULL;
+  int major, minor;
+  char *mount_path;
+  char *mount_fs;
+  glvm_cleanup_vg vg_t vg = NULL;
+          
+  if (!glvm_open_vg_lv (app->lvmh, path, "r", 0, &vg, &lv,
+                        cancellable, error))
+    goto out;
+
+  if (!glvm_get_lv_majmin (lv, &major, &minor, error))
+    goto out;
+
+  g_print ("%s\n", path);
+
+  lookup_mount (mountdata, major, minor, &mount_path, &mount_fs);
+  if (mount_path == NULL)
+    g_print ("  (not mounted)\n");
+  else
+    {
+      g_print ("  mounted: %s\n", mount_path);
+      g_print ("  fs: %s\n", mount_fs);
+    }
+
+
+  ret = TRUE;
+ out:
   return ret;
 }
 
@@ -233,6 +291,8 @@ main (int    argc,
   GOptionContext *context;
   char **iter;
 
+  g_setenv ("GIO_USE_VFS", "local", TRUE);
+
   memset (&appstruct, 0, sizeof (appstruct));
   app = &appstruct;
 
@@ -248,6 +308,10 @@ main (int    argc,
       glvm_set_error (error, app->lvmh);
       goto out;
     }
+
+  app->mountdata = parse_mounts_indexed_by_majmin (error);
+  if (!app->mountdata)
+    goto out;
 
   if (opt_tag_lv)
     {
@@ -278,8 +342,11 @@ main (int    argc,
     {
       for (i = 0; i < names->len; i++)
         {
-          const char *name = names->pdata[i];
-          g_print ("%s\n", name);
+          const char *path = names->pdata[i];
+          
+          if (!print_one_lv_status (app->lvmh, app->mountdata, path,
+                                    cancellable, error))
+            goto out;
         }
     }
   else
@@ -290,6 +357,8 @@ main (int    argc,
  out:
   if (app->lvmh)
     lvm_quit (app->lvmh);
+  if (app->mountdata)
+    g_hash_table_unref (app->mountdata);
   if (local_error != NULL)
     {
       g_printerr ("%s\n", local_error->message);
