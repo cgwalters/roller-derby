@@ -28,7 +28,6 @@
 #include <errno.h>
 
 #include "glvm.h"
-#include "util.h"
 #include "libgsystem.h"
 
 void
@@ -126,8 +125,8 @@ glvm_open_vg_lv (lvm_t           lvmh,
     goto out;
   
   ret = TRUE;
-  rd_transfer_out_value (out_vg, &ret_vg);
-  rd_transfer_out_value (out_lv, &ret_lv);
+  gs_transfer_out_value (out_vg, &ret_vg);
+  gs_transfer_out_value (out_lv, &ret_lv);
  out:
   return ret;
 }

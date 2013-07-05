@@ -23,8 +23,6 @@
 #include <gio/gio.h>
 #include <string.h>
 
-#include "glvm.h"
-#include "util.h"
 #include "rd-main.h"
 #include "libgsystem.h"
 
@@ -125,7 +123,7 @@ list_lvs_to_snapshot (lvm_t              lvmh,
 
   ret = TRUE;
  out:
-  rd_transfer_out_value (out_lv_names, &ret_lv_names);
+  gs_transfer_out_value (out_lv_names, &ret_lv_names);
   return ret;
 }
 

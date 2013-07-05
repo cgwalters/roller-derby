@@ -24,7 +24,6 @@
 #include <string.h>
 
 #include "rd.h"
-#include "util.h"
 #include "libgsystem.h"
 
 gboolean

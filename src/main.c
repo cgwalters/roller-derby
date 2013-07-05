@@ -23,9 +23,7 @@
 #include <gio/gio.h>
 #include <string.h>
 
-#include "util.h"
 #include "rd-main.h"
-#include "glvm.h"
 #include "libgsystem.h"
 
 static gboolean handle_opt_version (const gchar    *option_name,

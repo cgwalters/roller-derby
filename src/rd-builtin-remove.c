@@ -23,9 +23,7 @@
 #include <gio/gio.h>
 #include <string.h>
 
-#include "rd.h"
 #include "rd-main.h"
-#include "util.h"
 #include "libgsystem.h"
 
 gboolean

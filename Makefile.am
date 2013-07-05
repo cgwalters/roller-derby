@@ -39,6 +39,7 @@ privlib_LTLIBRARIES =
 
 EXTRA_DIST += autogen.sh COPYING
 
+include Makefile-glvm.am
 include Makefile-main.am
 
 install-data-hook: $(INSTALL_DATA_HOOKS)
